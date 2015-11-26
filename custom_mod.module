@@ -1,0 +1,655 @@
+<?php
+
+function custom_mod_form_alter(&$form, &$form_state, $form_id) { 
+    if($form_id=="poll_cancel_form" || $form_id == "poll_view_voting") {
+        $form['#action'] = "#";
+       
+    }
+if($form_id == "og_ui_add_users") {
+    unset($form['membership_fields']['og_membership_invitation']);
+}
+if($form_id == "commons_trusted_contacts_messages_popup") {
+    $form['subject']['#type'] = 'textfield';
+    unset($form['subject']['#default_value']);
+}
+    if($form_id == "post_node_form") {
+        if(isset($_GET['tid'])) {
+         $node = node_load($_GET['tid']);   
+         drupal_add_js(array('event' => array('title' => $node->title, 'tid' => $_GET['tid'])), 'setting'); 
+        }
+    }
+    
+    if($form_id == "views_exposed_form") {
+        if(isset($form_state['input']['tid'])) {
+          if($form_state['input']['tid'] == "All" && empty($form_state['view']->exposed_input['tid'])) {
+            $form_state['input']['tid']= arg(2);
+            $form_state['view']->exposed_input['tid'] = arg(2);
+          }
+        }
+    }
+    
+    if($form['#id'] == 'comment-form'){
+        if($form_state['build_info']['form_id'] == "comment_node_event_form"){
+        $form_state['redirect'] = "node/".$form['nid']['#value'];
+        $form['#action'] = "node/".$form['nid']['#value'];
+        }
+    }
+    if($form_id == "privatemsg_new") {
+        
+        if(arg(0) == 'messages' && arg(1) == 'new') {
+        form_load_include($form_state, 'inc', 'privatemsg', 'privatemsg.pages');
+    
+        $form['recipient']['#required'] = FALSE;
+        /**$form_state['values']['subject'] = "Subject";
+        $form['subject']['#access'] = FALSE;**/
+       // $form['field_recipient']['#required'] = FALSE;
+        ////$form['field_recipient']['und']['add_more']['#value'] = t('Ajouter un nouveau destinataire');
+        unset($form['#validate']);
+        $form['#validate'][0] = "custom_message_validate";
+        $form['#submit'][0] = "custom_message_submit";
+   
+        }
+        if(arg(0) == 'messages' && arg(1) == 'view') {
+            $form['field_recipient']['#access'] = FALSE;
+        }
+    }
+    if($form_id == "commons_trusted_contacts_messages_popup") {
+        form_load_include($form_state, 'inc', 'privatemsg', 'privatemsg.pages');
+        $form['field_recipient']['#access'] = FALSE;
+    }
+    if($form_id == "privatemsg_list") {
+        global $user;
+        if(arg(1) == $user->uid) {
+        $form['#prefix'] = '<div class="message_link"><a href="/user/'. $user->uid.'/messages">Boîte de réception</a><a href="/messages/sent">Messages envoyés</a><a href="/messages/new">Rédiger un nouveau message</a></div>';
+        }
+    }
+}
+
+function custom_message_validate($form, &$form_state) {
+}
+function custom_message_submit($form, &$form_state) {
+    foreach ( $form_state['values']['field_recipient']['und'] as $uid => $user) {
+
+        if(is_int($uid)) {
+        $u = $user['uid'];
+
+    $usr = user_load($u);
+
+ $recipients[$uid] = $usr;
+// $name = empty($name) ? $usr->name : $name. ", " . $usr->name;
+ $n = (isset($usr->field_name_first['und'][0]['value'])?$usr->field_name_first['und'][0]['value']:""). (isset($usr->field_name_last['und'][0]['value'])? " ".$usr->field_name_last['und'][0]['value']:"");
+ $name = empty($name) ? $n : ($name . ", " . $n);
+        }
+    }
+  // Define the subject of the thread
+ /** $subject = "Discussion privée avec " . $name;**/
+   
+  $subject = $form_state['values']['subject'];
+  // We assume the fapi element with the message text is called "body".
+  $body = $form_state['values']['body']['value'];
+  
+  // Send the message.
+  $return = privatemsg_new_thread($recipients, $subject, $body);
+  
+  // Check return value to see if the message has been sent.
+  if ($return['success']) {
+    // Message has been sent, display confirmation message.
+      
+    drupal_set_message(t('Un message a été envoyé à name.', array('name' => $name)));
+  }
+  else {
+    // Display possible errors...
+    foreach ($return['messages']['error'] as $error) {
+      drupal_set_message($error, 'error');
+    }
+  }
+  // Display warnings, these might occur even if the message has been sent successfully.
+        foreach ($return['messages']['warning'] as $warning) {
+          drupal_set_message($warning, 'warning');
+        }
+
+}
+/**
+ * Implements hook_node_update().
+ */
+function custom_mod_node_update($node) {
+$group_content_access = 0;
+$node_access = 0;
+$grant_view = "all";
+$gid = 0;
+if($node->type == "group") {
+ 
+ $gid = $node->nid;
+
+$dum_nid = 0;
+
+if(($node->group_access['und'][0]['value'] == 1) || ($node->group_access['und'][0]['value'] == 0 && $node->field_og_access_default_value['und'][0]['value'] == 1)) { //Private $node->field_og_access_default_value['und'][0]['value'] == 1
+    $group_content_access = 2;
+    $gid = $node->nid;
+    $grant_view = "og_access:node";
+} 
+elseif($node->group_access['und'][0]['value'] == 0) { //Public $node->field_og_access_default_value['und'][0]['value'] == 0
+    $group_content_access = 0;
+    $gid = 0;
+    $grant_view = "all";
+}
+
+//Select node by group
+  $result = db_select('og_membership', 'n')
+    ->fields('n', array('etid'))
+    ->condition('gid', $node->nid,'=')
+    ->condition('entity_type', 'node','=')
+    ->execute();
+
+foreach($result as $r) {
+
+$tbl_content_access = db_update('field_data_group_content_access') // Table name no longer needs {}
+->fields(array(
+    'group_content_access_value' => $group_content_access,
+  ))
+  ->condition('entity_id', $r->etid , '=')
+  ->condition('entity_type', 'node' ,'=')
+  ->execute();
+
+$tbl_ = db_update('node_access') // Table name no longer needs {}
+->fields(array(
+    'gid' => $gid,
+    'realm' => $grant_view,
+  ))
+  ->condition('nid', $r->etid , '=')
+  ->execute();
+  
+}
+}
+
+$v1=0;
+if($node->type == "event" || $node->type == "post" || $node->type == "question" || $node->type == "poll") {
+
+    if(!empty($node->og_group_ref['und']) && empty($node->og_user_group_ref['und'])) {
+        foreach($node->og_group_ref['und'] as $k => $v) {
+            $grpid = $v['target_id'];
+            if($v1 == 0) {
+                break;
+            }
+        }
+
+        $result = db_select('node_access', 'n')
+            ->fields('n', array('realm'))
+            ->condition('nid', $grpid,'=')
+            ->execute();
+        $realm = $result->fetchField(0);
+
+        if($realm == "all") {
+            
+            
+            $result2 = db_select('field_data_field_og_access_default_value', 'f')
+            ->fields('f', array('field_og_access_default_value_value'))
+            ->condition('entity_id', $grpid,'=')
+            ->execute();
+        $realm2 = $result2->fetchField(0);
+            if($realm2 == 1) {
+                $group_content_access = 2;
+                $gid = $grpid;
+                $grant_view = "og_access:node"; 
+            }
+            else {
+            $group_content_access = 0;
+            $gid = 0;
+            $grant_view = "all";
+            }
+        }
+        if($realm == "og_access:node") {
+            $group_content_access = 2;
+            $gid = $grpid;
+            $grant_view = "og_access:node";
+        }
+        if($realm == "og_access:user") {
+            /*$group_content_access = 2;
+            $gid = $node->nid;
+            $grant_view = "og_access:node";*/
+        }
+
+        $tbl_content_access = db_update('field_data_group_content_access') // Table name no longer needs {}
+        ->fields(array(
+            'group_content_access_value' => $group_content_access,
+          ))
+          ->condition('entity_id', $node->nid , '=')
+          ->condition('entity_type', 'node' ,'=')
+          ->execute();
+
+        $tbl_ = db_update('node_access') // Table name no longer needs {}
+        ->fields(array(
+            'gid' => $gid,
+            'realm' => $grant_view,
+          ))
+          ->condition('nid', $node->nid , '=')
+          ->execute();
+    
+    }
+}
+
+if($node->type == "answer") {
+
+    //if(!empty($node->og_group_ref['und']) && empty($node->og_user_group_ref['und'])) {
+      if(!empty($node->field_related_question['und'][0]['target_id'])) {
+        $ques = node_load($node->field_related_question['und'][0]['target_id']);
+        foreach($ques->og_group_ref['und'] as $k => $v) {
+            $grpid = $v['target_id'];
+            if($v1 == 0) {
+                break;
+            }
+        }
+
+        $result = db_select('node_access', 'n')
+            ->fields('n', array('realm'))
+            ->condition('nid', $grpid,'=')
+            ->execute();
+        $realm = $result->fetchField(0);
+
+        if($realm == "all") {
+            $group_content_access = 0;
+            $gid = 0;
+            $grant_view = "all";
+        }
+        if($realm == "og_access:node") {
+            $group_content_access = 2;
+            $gid = $grpid;
+            $grant_view = "og_access:node";
+        }
+        if($realm == "og_access:user") {
+            /*$group_content_access = 2;
+            $gid = $node->nid;
+            $grant_view = "og_access:node";*/
+        }
+
+        $tbl_content_access = db_update('field_data_group_content_access') // Table name no longer needs {}
+        ->fields(array(
+            'group_content_access_value' => $group_content_access,
+          ))
+          ->condition('entity_id', $node->nid , '=')
+          ->condition('entity_type', 'node' ,'=')
+          ->execute();
+
+        $tbl_ = db_update('node_access') // Table name no longer needs {}
+        ->fields(array(
+            'gid' => $gid,
+            'realm' => $grant_view,
+          ))
+          ->condition('nid', $node->nid , '=')
+          ->execute();
+    
+    }
+}
+}
+/**
+ * Implements hook_node_save().
+ */
+function custom_mod_node_presave($node) { 
+    /*if ($node->type =='event') {
+    $node->locations[0]['locpick']['user_latitude'] = $node->field_map_view['und'][0]['lat'];
+    $node->locations[0]['locpick']['user_longitude'] = $node->field_map_view['und'][0]['lon'];
+    }*/
+}
+/**
+ * Implements hook_node_postsave().
+ */
+function custom_mod_node_postsave($node) {
+
+//    die();
+$group_content_access = 0;
+$node_access = 0;
+$grant_view = "all";
+$gid = 0;
+
+$v1=0;
+
+if($node->type == "event" || $node->type == "post" || $node->type == " question" || $node->type == "poll") {
+    if(!empty($node->og_group_ref['und']) && empty($node->og_user_group_ref['und'])) {
+        foreach($node->og_group_ref['und'] as $k => $v) {
+            $grpid = $v['target_id'];
+            if($v1 == 0) {
+                break;
+            }
+        }
+
+        $result = db_select('node_access', 'n')
+            ->fields('n', array('realm'))
+            ->condition('nid', $grpid,'=')
+            ->execute();
+        $realm = $result->fetchField(0);
+        
+        if($realm == "all") {
+            
+            
+            
+             $result2 = db_select('field_data_field_og_access_default_value', 'f')
+            ->fields('f', array('field_og_access_default_value_value'))
+            ->condition('entity_id', $grpid,'=')
+            ->execute();
+        $realm2 = $result2->fetchField(0);
+            if($realm2 == 1) {
+                $group_content_access = 2;
+                $gid = $grpid;
+                $grant_view = "og_access:node"; 
+            }
+            else {
+            $group_content_access = 0;
+            $gid = 0;
+            $grant_view = "all";
+            }
+/*            $group_content_access = 0;
+            $gid = 0;
+            $grant_view = "all";*/
+        }
+        if($realm == "og_access:node") {
+            $group_content_access = 2;
+            $gid = $grpid;
+            $grant_view = "og_access:node";
+        }
+        if($realm == "og_access:user") {
+            /*$group_content_access = 2;
+            $gid = $node->nid;
+            $grant_view = "og_access:node";*/
+       }
+        $tbl_content_access = db_update('field_data_group_content_access') // Table name no longer needs {}
+        ->fields(array(
+            'group_content_access_value' => $group_content_access,
+          ))
+          ->condition('entity_id', $node->nid , '=')
+          ->condition('entity_type', 'node' ,'=')
+          ->execute();
+
+        $tbl_ = db_update('node_access') // Table name no longer needs {}
+        ->fields(array(
+            'gid' => $gid,
+            'realm' => $grant_view,
+          ))
+          ->condition('nid', $node->nid , '=')
+          ->execute();
+       /* if(!$tbl_){
+        db_insert('node_access')
+        ->fields(array('nid', 'gid', 'realm', 'grant_view', 'grant_update', 'grant_delete'))
+        ->values(array(
+                        'nid' => $node->nid,
+                        'gid' => $gid,
+                        'realm' => $grant_view,
+                        'grant_view' => 1,
+                        'grant_update' => 0,
+                        'grant_delete' => 0,
+                        ))
+        ->execute();
+        }*/
+        
+    
+    }
+}
+if($node->type == "answer") {
+
+    watchdog('type selected', 'error message');
+
+    if(!empty($node->field_related_question['und'][0]['target_id'])) {
+        $ques = node_load($node->field_related_question['und'][0]['target_id']);
+    if(!empty($ques->og_group_ref['und']) && empty($ques->og_user_group_ref['und'])) {
+
+        watchdog('group selected', 'error message');
+
+        foreach($ques->og_group_ref['und'] as $k => $v) {
+            $grpid = $v['target_id'];
+            if($v1 == 0) {
+                break;
+            }
+        }
+
+        $result = db_select('node_access', 'n')
+            ->fields('n', array('realm'))
+            ->condition('nid', $grpid,'=')
+            ->execute();
+        $realm = $result->fetchField(0);
+        
+        if($realm == "all") {
+            $group_content_access = 0;
+            $gid = 0;
+            $grant_view = "all";
+        }
+        if($realm == "og_access:node") {
+            $group_content_access = 2;
+            $gid = $grpid;
+            $grant_view = "og_access:node";
+        }
+        if($realm == "og_access:user") {
+            /*$group_content_access = 2;
+            $gid = $node->nid;
+            $grant_view = "og_access:node";*/
+       }
+        $tbl_content_access = db_update('field_data_group_content_access') // Table name no longer needs {}
+        ->fields(array(
+            'group_content_access_value' => $group_content_access,
+          ))
+          ->condition('entity_id', $node->nid , '=')
+          ->condition('entity_type', 'node' ,'=')
+          ->execute();
+
+        $tbl_ = db_update('node_access') // Table name no longer needs {}
+        ->fields(array(
+            'gid' => $gid,
+            'realm' => $grant_view,
+          ))
+          ->condition('nid', $node->nid , '=')
+          ->execute();
+
+            if(!$tbl_){
+            db_insert('node_access')
+            ->fields(array('nid', 'gid', 'realm', 'grant_view', 'grant_update', 'grant_delete'))
+            ->values(array(
+                            'nid' => $node->nid,
+                            'gid' => $gid,
+                            'realm' => $grant_view,
+                            'grant_view' => 1,
+                            'grant_update' => 0,
+                            'grant_delete' => 0,
+                            ))
+            ->execute();
+            }
+            
+            $query_og = db_select('og_membership', 'o')
+            ->fields('o', array('type', 'group_type', 'state', 'field_name'))
+            ->condition('etid', $ques->nid,'=')
+            ->condition('gid', $grpid,'=')
+            ->condition('entity_type', 'node','=')
+            ->execute();
+            
+            $result_og = $query_og->fetchObject();
+            //watch_log("select",$result_og);
+            
+            $update_og = db_update('og_membership') // Table name no longer needs {}
+            ->fields(array(
+                'type' => $result_og->type,
+                'group_type' => $result_og->group_type,
+                'state' => $result_og->state,
+                'field_name' => $result_og->field_name,
+                'gid' => $grpid,
+              ))
+            ->condition('etid', $node->nid , '=')
+            ->condition('entity_type', 'node' , '=')
+            ->execute();
+            //watch_log("update", $update_og);
+    }//field_related_question
+    }
+}
+}
+
+
+/**
+* Implements hook_block_info().
+*/
+function custom_mod_block_info() {
+  $blocks = array();
+  $blocks['idea_box'] = array(
+    'info' => t('Idea Box'),
+  );
+  return $blocks;
+}
+/**
+* Implements hook_block_view().
+*/
+function custom_mod_block_view($delta = '') {
+  $block = array();
+  switch ($delta) {
+    case 'idea_box':
+      $block['subject'] = 'Boîte à idées';
+      $block['content'] = drupal_get_form('custom_mod_block_idea_box_form');
+      break;
+  }
+  return $block;
+}
+
+/**
+ * Custom form.
+ */
+function custom_mod_block_idea_box_form($form, &$form_state) {
+  $form = array(
+    '#prefix'=>'<div class="idea_box">',
+    '#suffix'=>'</div>',
+  );
+
+  if(arg(0)=="home" || arg(0)=="") {
+      $form_state["message_to"]="admin";
+
+      $form['idea'] = array(
+          '#type' => 'textarea',
+          '#cols' => 1,
+          '#resizable' => False,
+          '#rows' => 1,
+          '#title' => t('Laissez-nous vos idées/commentaires concernant le site'),
+      );
+  }
+  elseif(arg(0)=="node") {
+      $form_state["message_to"]="group_admin";
+      $form_state["gid"]= arg(1);
+
+      $form['idea'] = array(
+          '#type' => 'textarea',
+          '#cols' => 1,
+          '#resizable' => False,
+          '#rows' => 1,
+          '#title' => t('Laissez-nous vos idées/commentaires concernant ce groupe'),
+      );
+  }
+    else{
+        $form['idea'] = array(
+            '#type' => 'textarea',
+            '#cols' => 1,
+            '#resizable' => False,
+            '#rows' => 1,
+            '#title' => t('Quibus ita sceleste patratis Paulus cruore perfusus reversusque'),
+        );
+    }
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('POSTER'),
+  );
+
+  return $form;
+}
+
+/**
+ * Custom form submit function.
+ */
+function custom_mod_block_idea_box_form_submit($form, &$form_state) {
+  // You need the have Devel module enabled for dpm() to work.
+  if($form_state['message_to'] == "admin") {
+  $role = user_role_load_by_name("Admin");
+$uids = db_select('users_roles', 'ur')
+        ->fields('ur', array('uid'))
+        ->condition('ur.rid', $role->rid, '=')
+        ->execute()
+        ->fetchCol();
+
+    $admin_type = "Administrateur";
+      foreach($uids as $user => $pro ) {
+
+$profile = user_load($pro);
+ $recipient = array($profile);
+  // Define the subject of the thread
+  $subject = "Boîte à idées";
+  // We assume the fapi element with the message text is called "body".
+  $body = $form_state['values']['idea'];
+  
+  $recipients[$pro] = $profile;
+  
+  
+}
+// Send the message.
+$return = privatemsg_new_thread($recipients, $subject, $body);
+  }
+  elseif($form_state['message_to'] == "group_admin") {
+      $admin_type = "Groupe Administrateur";
+      $gid = $form_state["gid"];
+      $uids = db_query("SELECT DISTINCT users.uid AS uid, users.picture AS users_picture, users.name AS users_name, users.mail AS users_mail, users.created AS users_created, 'user' AS field_data_field_raison_social_user_entity_type, 'user' AS field_data_group_group_user_entity_type FROM {users} users LEFT JOIN {og_membership} og_membership_users ON users.uid = og_membership_users.etid AND og_membership_users.entity_type = 'user' LEFT JOIN {og_membership} og_membership ON users.uid = og_membership.etid AND (og_membership.entity_type = 'user' AND og_membership.entity_type = 'user' AND og_membership.entity_type = 'user') LEFT JOIN {og_users_roles} og_users_roles_og_membership ON og_membership.etid = og_users_roles_og_membership.uid INNER JOIN {og_role} og_users_roles_og_membership__og_role ON og_users_roles_og_membership.rid = og_users_roles_og_membership__og_role.rid WHERE (( (og_membership_users.gid = og_users_roles_og_membership.gid) AND (og_membership_users.group_type = og_users_roles_og_membership.group_type) AND (og_membership_users.gid = :gid ) )AND(( (users.status <> '0') AND (og_membership_users.state IN ('1')) AND (og_membership_users.group_type IN ('node')) AND (og_users_roles_og_membership__og_role.name = 'administrator member') ))) ORDER BY users_created DESC", array('gid' => $gid));
+      
+        foreach($uids as $user => $pro ) {
+  
+$profile = user_load($pro->uid);
+ $recipient = array($profile);
+  // Define the subject of the thread
+  $subject = "Boîte à idées";
+  // We assume the fapi element with the message text is called "body".
+  $body = $form_state['values']['idea'];
+  
+  $recipients[$pro->uid] = $profile;
+}
+ // Send the message.
+  $return = privatemsg_new_thread($recipients, $subject, $body);
+  }
+//foreach($users as $user => $profile) {
+
+  // Check return value to see if the message has been sent.
+  if ($return['success']) {
+    // Message has been sent, display confirmation message.
+      if($admin_type == "Administrateur") {
+        
+// Box idea message - website administrator
+        drupal_set_message(t('Le message a été envoyé à l\'administrateur du site.'));
+      }
+      else {
+// Box idea message - group administrator
+         drupal_set_message(t('Le message a été envoyé à l\'administrateur du groupe.'));
+      }
+  }
+  else {
+    // Display possible errors...
+    foreach ($return['messages']['error'] as $error) {
+      drupal_set_message($error, 'error');
+  }
+  }
+  // Display warnings, these might occur even if the message has been sent successfully.
+    foreach ($return['messages']['warning'] as $warning) {
+      drupal_set_message($warning, 'warning');
+    }
+}
+
+/*function custom_mod_field_extra_fields($elements) {
+dpm($elements);
+    
+}
+function custom_mod_node_view($node, $view_mode, $langcode) {
+  // Only add if the view mode is for a full view, although we 
+  // could control this via the Field UI too using 'hidden'.
+  if ($view_mode == 'full' && $node->type == 'event') {
+
+    //$node->content['extended_submitted_by'] = array(
+      //'#markup' => '<p>This is inserted unless hidden in the field ui.</p>',
+    //);
+  }
+}*/
+function custom_mod_tokens_alter(array &$replacements, array $context) {
+    if($context['type'] =="node" && $context['tokens']['commons-groups-first-group'] ="['tokens']['commons-groups-first-group']") {
+
+        
+        if(isset($context['data']['node']) && ($context['data']['node']->type =="event")) {
+        $context['data']['node']->field_date['und'][0]['value'] = format_date(strtotime($context['data']['node']->field_date['und'][0]['value']) ,'custom','d/m/Y'); 
+        $context['data']['node']->field_date['und'][0]['value2'] = format_date(strtotime($context['data']['node']->field_date['und'][0]['value2']) ,'custom','d/m/Y');
+        
+        }
+    }
+}
